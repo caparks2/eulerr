@@ -116,19 +116,60 @@ intersect_ellipses(const std::vector<double>& par,
 
 // compute loss between the actual and desired areas
 // [[Rcpp::export]]
-double
-optim_final_loss(const std::vector<double>& par,
-                 const std::vector<double>& areas,
-                 const bool circle)
-{
-  auto fit = intersect_ellipses(par, circle, false);
+// double
+// optim_final_loss(const std::vector<double>& par,
+//                  const std::vector<double>& areas,
+//                  const bool circle)
+// {
+//   auto fit = intersect_ellipses(par, circle, false);
+// 
+//   // return sums of squared errors
+//   return std::inner_product(
+//     fit.begin(),
+//     fit.end(),
+//     areas.begin(),
+//     0.0,
+//     std::plus<double>(),
+//     [](double a, double b) { return (a - b) * (a - b); });
+// }
 
-  // return sums of squared errors
-  return std::inner_product(
-    fit.begin(),
-    fit.end(),
-    areas.begin(),
-    0.0,
-    std::plus<double>(),
-    [](double a, double b) { return (a - b) * (a - b); });
+// compute loss between the actual and desired areas
+//          original is minimizing sum of square of area difference
+//          modification:
+//             Let x_ be the estimate of x -- the region area
+//             given 0 < x <= 1, x_ >= 0, with sum(all x) == 1
+//          A perfect fit would have
+//             x = some constant * x_ for every x_,x pair
+//          Rewrite to
+//             x / x_ = some constant r, r > 0
+//          The estimated r_ is sum(x)/sum(x_)
+//          If we minimize sum of square of (x/x_ - r_) is not good as each fit
+//          has different r_. So better use the expression (x/x_ - r_)/r_,
+//          So loss is:  sum of square ((x/x_ - r_)/r_)
+//
+//          Note that x_ can be zero. In that case, a small value will be used instead
+//          This tweat is by design to discourage/remove empty region in the
+//          final solution. This is why x/x_ is used instead of x_/x
+//
+// [[Rcpp::export]]
+double optim_final_loss(const std::vector<double>& par,
+                        const std::vector<double>& areas,
+                        const bool circle)
+{
+  const auto small_value = 1e-10/areas.size();
+  auto fit = intersect_ellipses(par, circle, false);
+  auto sum_areas = std::accumulate(areas.begin(),areas.end(),0.0);
+  auto sum_fit = std::accumulate(fit.begin(),fit.end(),0.0);
+  auto x = areas; std::transform(x.begin(),x.end(),x.begin(),[sum_areas](double x){ return x/sum_areas; });
+  auto x_ = fit; std::transform(x_.begin(),x_.end(),x_.begin(),[sum_fit](double x){ return x/sum_fit; });
+  auto r_ = std::accumulate(x.begin(),x.end(),0.0)/std::accumulate(x_.begin(),x_.end(),0.0);
+  // now adjust the tiny values in x to small_value * r_ so that if the we get r_ when x_ is close to 0
+  // Also keep this loss function continuous
+  std::transform(x.begin(),x.end(),x.begin(),[small_value,r_](double a)->double{return std::max(a,small_value * r_);});
+  // now adjust x_
+  std::transform(x_.begin(),x_.end(),x_.begin(),[small_value](double a)->double{return std::max(a,small_value);});
+  auto ratios = x; std::transform(ratios.begin(),ratios.end(),x_.begin(),ratios.begin(),std::divides<double>());
+  std::transform(ratios.begin(),ratios.end(),ratios.begin(),[r_](double r)->double{auto diff=(r-r_)/r_; return diff*diff;});
+  
+  return std::accumulate(ratios.begin(),ratios.end(),0.0);
 }
